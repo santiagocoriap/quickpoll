@@ -1,0 +1,470 @@
+// PollForge Prisma schema
+// A generic, no-code-configurable polling & voting system.
+//
+// Design notes:
+//  - Votes are stored NORMALIZED (Vote + VoteSelection) so the same tables
+//    support single / multiple / ranked / score / approval / weighted ballots.
+//  - No poll-specific logic lives in the DB. All behaviour is driven by the
+//    rule configuration attached to sections / groups and evaluated server-side.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  SUPER_ADMIN
+  POLL_ADMIN
+  VOTER
+}
+
+enum PollStatus {
+  DRAFT
+  SCHEDULED
+  OPEN
+  CLOSED
+  NEEDS_TIEBREAK
+  FINALIZED
+  ARCHIVED
+}
+
+enum PollVisibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum VotingMethod {
+  SINGLE
+  MULTIPLE
+  RANKED
+  SCORE
+  APPROVAL
+}
+
+enum ResultVisibility {
+  ALWAYS // anyone who can see the poll can see results
+  AFTER_VOTE // visible to a voter once they have voted
+  AFTER_CLOSE // visible once the poll closes
+  ADMIN_ONLY // only admins
+}
+
+enum Anonymity {
+  ANONYMOUS // hidden from everyone, including admins
+  ADMIN_VISIBLE // admins can see who voted for what
+  PUBLIC // everyone can see who voted for what
+}
+
+enum TieBreakStrategy {
+  MANUAL
+  RUNOFF
+  INSTANT_RUNOFF
+  PREVIOUS_ROUND
+  MOST_FIRST_PLACE
+  MOST_APPROVALS
+  RANDOM_SEED
+  KEEP_TIE
+}
+
+enum LimitConflictStrategy {
+  HIGHEST // highest limit among the voter's groups wins
+  LOWEST // lowest limit wins
+  PRIORITY // group with highest `priority` wins
+  OVERRIDE // a manually assigned per-user override wins
+}
+
+enum PhaseStatus {
+  OPEN
+  CLOSED
+  FINALIZED
+}
+
+// ---------------------------------------------------------------------------
+// Identity & groups
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(VOTER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  groups      UserGroup[]
+  ownedPolls  Poll[]      @relation("PollOwner")
+  votes       Vote[]
+  invitesMade Invite[]    @relation("InviteCreator")
+  auditLogs   AuditLog[]  @relation("AuditActor")
+  overrides   UserSectionOverride[]
+  pollAccess  PollAccess[]
+
+  @@index([role])
+}
+
+model Group {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  color       String?
+  priority    Int      @default(0) // higher wins for PRIORITY conflict strategy
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  members          UserGroup[]
+  sectionLimits    SectionGroupLimit[]
+  optionRules      OptionGroupRule[]
+  pollAccess       PollAccess[]
+}
+
+model UserGroup {
+  id      String @id @default(cuid())
+  userId  String
+  groupId String
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+}
+
+// ---------------------------------------------------------------------------
+// Polls
+// ---------------------------------------------------------------------------
+
+model Poll {
+  id          String         @id @default(cuid())
+  title       String
+  description String?
+  slug        String         @unique
+  status      PollStatus     @default(DRAFT)
+  visibility  PollVisibility @default(PRIVATE)
+  // When true, sections are voted one stage at a time (by position). Only the
+  // section at `currentStage` accepts votes; advancing requires the current
+  // stage's ties to be resolved first.
+  sequential   Boolean       @default(false)
+  currentStage Int           @default(0)
+  ownerId     String
+  opensAt     DateTime?
+  closesAt    DateTime?
+  shareToken  String         @unique @default(cuid())
+  finalizedAt DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  owner    User          @relation("PollOwner", fields: [ownerId], references: [id])
+  sections PollSection[]
+  invites  Invite[]
+  codes    VoterCode[]
+  phases   PollPhase[]
+  votes    Vote[]
+  access   PollAccess[]
+  auditLogs AuditLog[]
+
+  @@index([ownerId])
+  @@index([status])
+}
+
+// Restricts a PRIVATE poll to specific users and/or groups.
+model PollAccess {
+  id      String  @id @default(cuid())
+  pollId  String
+  userId  String?
+  groupId String?
+
+  poll  Poll   @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group Group? @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([pollId])
+}
+
+model PollSection {
+  id          String       @id @default(cuid())
+  pollId      String
+  title       String
+  description String?
+  position    Int          @default(0)
+  method      VotingMethod @default(SINGLE)
+
+  // Default selection limits (applied when no group override matches).
+  minSelections   Int?
+  maxSelections   Int?
+  exactSelections Int?
+
+  // Ranking config
+  minRanked        Int?
+  maxRanked        Int?
+  requireFullRank  Boolean @default(false)
+
+  // Score config
+  scoreMin       Int     @default(0)
+  scoreMax       Int     @default(5)
+  allowSameScore Boolean @default(true)
+
+  // Default vote weight (per-group weight can override).
+  defaultWeight Int @default(1)
+
+  // Behaviour
+  resultVisibility ResultVisibility @default(AFTER_CLOSE)
+  anonymity        Anonymity        @default(ADMIN_VISIBLE)
+  allowVoteEdit    Boolean          @default(true)
+
+  // How to resolve a limit when a voter is in multiple groups.
+  conflictStrategy LimitConflictStrategy @default(HIGHEST)
+
+  // Voter eligibility: if allowedGroupIds is non-empty, ONLY those groups may
+  // vote. excludedGroupIds are always blocked. Stored as JSON arrays of ids.
+  allowedGroupIds  Json?
+  excludedGroupIds Json?
+
+  // Tie-breaking
+  tieBreakStrategy TieBreakStrategy @default(MANUAL)
+  numWinners       Int              @default(1)
+
+  // Optional advanced JSON rule (safe DSL, never executed as code).
+  advancedRule Json?
+
+  poll        Poll                  @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  options     PollOption[]
+  groupLimits SectionGroupLimit[]
+  rules       PollRule[]
+  phases      PollPhase[]
+  votes       Vote[]
+  overrides   UserSectionOverride[]
+
+  @@index([pollId])
+}
+
+model PollOption {
+  id          String  @id @default(cuid())
+  sectionId   String
+  label       String
+  description String?
+  position    Int     @default(0)
+
+  section    PollSection       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  groupRules OptionGroupRule[]
+  selections VoteSelection[]
+
+  @@index([sectionId])
+}
+
+// Per-group selection limits / weight / eligibility for a section.
+// A row with groupId = null is treated as the section default for everyone.
+model SectionGroupLimit {
+  id        String  @id @default(cuid())
+  sectionId String
+  groupId   String
+
+  minSelections   Int?
+  maxSelections   Int?
+  exactSelections Int?
+  voteWeight      Int     @default(1)
+  canVote         Boolean @default(true)
+
+  section PollSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  group   Group       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, groupId])
+  @@index([sectionId])
+}
+
+// Manual per-user override of limits/weight for a section (OVERRIDE strategy).
+model UserSectionOverride {
+  id        String  @id @default(cuid())
+  sectionId String
+  userId    String
+
+  minSelections   Int?
+  maxSelections   Int?
+  exactSelections Int?
+  voteWeight      Int?
+  canVote         Boolean?
+
+  section PollSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  user    User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sectionId, userId])
+}
+
+// Option eligibility per group: hide or disable an option for a group.
+model OptionGroupRule {
+  id       String  @id @default(cuid())
+  optionId String
+  groupId  String
+  hidden   Boolean @default(false)
+  disabled Boolean @default(false)
+
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+  group  Group      @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([optionId, groupId])
+}
+
+// Generic / advanced rule container. Used for the optional advanced JSON DSL
+// rules and to keep an auditable record of rule definitions per section.
+model PollRule {
+  id          String   @id @default(cuid())
+  sectionId   String
+  type        String // e.g. "ADVANCED_JSON", "ELIGIBILITY", "WEIGHT"
+  description String?
+  config      Json
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  section PollSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([sectionId])
+}
+
+// ---------------------------------------------------------------------------
+// Tie-break phases / rounds
+// ---------------------------------------------------------------------------
+
+model PollPhase {
+  id         String      @id @default(cuid())
+  pollId     String
+  sectionId  String
+  parentId   String?
+  phaseIndex Int         @default(1)
+  label      String
+  status     PhaseStatus @default(OPEN)
+  // Candidate option ids carried into this runoff round.
+  optionIds  Json
+  // How many winning seats this runoff fills (numWinners minus the winners
+  // already locked in by the previous round). Null = fall back to numWinners.
+  seats      Int?
+  // A runoff has its OWN voting config, independent of the parent section, so a
+  // tie-break can actually discriminate (e.g. pick exactly 1 of the 2 tied).
+  method          VotingMethod @default(SINGLE)
+  minSelections   Int?
+  maxSelections   Int?
+  exactSelections Int?
+  seed       String? // visible seed for auditable random tie-breaks
+  resultJson Json? // snapshot of the computed result for this phase
+  createdAt  DateTime    @default(now())
+  closedAt   DateTime?
+
+  poll     Poll        @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  section  PollSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  parent   PollPhase?  @relation("PhaseChildren", fields: [parentId], references: [id])
+  children PollPhase[] @relation("PhaseChildren")
+  votes    Vote[]
+
+  @@index([pollId])
+  @@index([sectionId])
+}
+
+// ---------------------------------------------------------------------------
+// Votes (normalized)
+// ---------------------------------------------------------------------------
+
+model Vote {
+  id          String   @id @default(cuid())
+  pollId      String
+  sectionId   String
+  phaseId     String? // null = original round; set = runoff phase
+  userId      String?
+  voterCodeId String? // identity when voting via a one-time code
+  weight      Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  poll       Poll            @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  section    PollSection     @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  phase      PollPhase?      @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+  user       User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  voterCode  VoterCode?      @relation(fields: [voterCodeId], references: [id])
+  selections VoteSelection[]
+
+  // One ballot per identity per section per phase.
+  @@unique([sectionId, phaseId, userId])
+  @@unique([sectionId, phaseId, voterCodeId])
+  @@index([sectionId, phaseId])
+}
+
+model VoteSelection {
+  id       String @id @default(cuid())
+  voteId   String
+  optionId String
+  rank     Int? // for ranked-choice ballots
+  score    Int? // for score voting
+  approved Boolean @default(true)
+
+  vote   Vote       @relation(fields: [voteId], references: [id], onDelete: Cascade)
+  option PollOption @relation(fields: [optionId], references: [id], onDelete: Cascade)
+
+  @@unique([voteId, optionId])
+  @@index([optionId])
+}
+
+// ---------------------------------------------------------------------------
+// Access: invites & one-time voter codes
+// ---------------------------------------------------------------------------
+
+model Invite {
+  id          String    @id @default(cuid())
+  token       String    @unique
+  pollId      String?
+  email       String?
+  role        Role      @default(VOTER)
+  groupIds    Json? // groups to auto-assign on acceptance
+  maxUses     Int       @default(1)
+  uses        Int       @default(0)
+  expiresAt   DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+
+  poll      Poll? @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  createdBy User  @relation("InviteCreator", fields: [createdById], references: [id])
+
+  @@index([pollId])
+}
+
+model VoterCode {
+  id        String    @id @default(cuid())
+  pollId    String
+  codeHash  String    @unique // store only the hash of the one-time code
+  label     String?
+  groupIds  Json?
+  used      Boolean   @default(false)
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+
+  poll  Poll   @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  votes Vote[]
+
+  @@index([pollId])
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  pollId     String?
+  actorId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  poll  Poll? @relation(fields: [pollId], references: [id], onDelete: Cascade)
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([pollId])
+  @@index([createdAt])
+}

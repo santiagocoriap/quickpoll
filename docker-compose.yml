@@ -1,0 +1,36 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pollforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pollforge}
+      POSTGRES_DB: ${POSTGRES_DB:-pollforge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pollforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # Not published to the host by default; the web service reaches it over the
+    # internal network. Uncomment to inspect the DB directly.
+    # ports:
+    #   - "5432:5432"
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-pollforge}:${POSTGRES_PASSWORD:-pollforge}@db:5432/${POSTGRES_DB:-pollforge}?schema=public"
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in your .env}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

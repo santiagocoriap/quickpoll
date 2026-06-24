@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Poll" ADD COLUMN "sequential" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "Poll" ADD COLUMN "currentStage" INTEGER NOT NULL DEFAULT 0;
