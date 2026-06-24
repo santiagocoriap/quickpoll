@@ -1,0 +1,45 @@
+# Production compose for Coolify (or any host) that PULLS a prebuilt image
+# instead of building on the server. Use this when your VPS can't build the image.
+#
+# Set WEB_IMAGE to the image produced by the GitHub Actions workflow, e.g.
+#   WEB_IMAGE=ghcr.io/your-user/quickpoll:latest
+#
+# Everything else (migrations, seeding) is baked into the image and runs on start.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pollforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pollforge}
+      POSTGRES_DB: ${POSTGRES_DB:-pollforge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pollforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    # No `build:` here on purpose — the image is pulled, not built.
+    image: ${WEB_IMAGE:-ghcr.io/your-user/quickpoll:latest}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-pollforge}:${POSTGRES_PASSWORD:-pollforge}@db:5432/${POSTGRES_DB:-pollforge}?schema=public"
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in your environment}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      NODE_ENV: production
+    # Coolify routes its proxy to this port (set the domain in the Coolify UI).
+    # If you run this compose directly (no Coolify proxy), publish the port:
+    #   ports:
+    #     - "3000:3000"
+    expose:
+      - "3000"
+
+volumes:
+  pgdata:

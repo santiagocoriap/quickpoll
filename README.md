@@ -119,6 +119,18 @@ to create the Super Admin account.
 
 To stop: `Ctrl-C`, then `docker compose down` (add `-v` to also wipe the database volume).
 
+### Deploying on a low-resource VPS (Coolify / prebuilt image)
+
+If your server can't build the image (not enough CPU/RAM), don't build on it — build the image once
+on GitHub Actions, push it to a registry (GHCR), and have your host **pull** the finished image. The
+image is self-contained (it runs migrations on startup), so the server only pulls and runs it.
+
+- CI workflow: [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml) builds and
+  pushes `ghcr.io/<you>/<repo>` on every push to `main`.
+- Pull-only compose: [`docker-compose.prod.yml`](docker-compose.prod.yml) references the image via
+  `WEB_IMAGE` instead of `build:`.
+- Step-by-step Coolify guide: **[docs/deploy-coolify.md](docs/deploy-coolify.md)**.
+
 ---
 
 ## First run & demo data

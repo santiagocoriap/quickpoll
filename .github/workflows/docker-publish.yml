@@ -1,0 +1,69 @@
+name: Build and publish Docker image
+
+# Builds the production image on GitHub's runners (which have plenty of CPU/RAM)
+# and pushes it to the GitHub Container Registry (ghcr.io). Your VPS then only
+# has to *pull* the finished image — it never builds anything.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+env:
+  REGISTRY: ghcr.io
+  # Resulting image: ghcr.io/<owner>/<repo>  (lowercased automatically)
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=tag
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # Most VPSes are x86_64. If yours is ARM, change to linux/arm64
+          # (or use "linux/amd64,linux/arm64" for a multi-arch image).
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Optional: tell Coolify to redeploy as soon as the new image is ready.
+      # 1. In Coolify, open your resource -> "Webhooks" -> copy the Deploy webhook URL.
+      # 2. Add it as a repo secret named COOLIFY_DEPLOY_WEBHOOK.
+      # (Mapped to an env var because the `secrets` context isn't reliable in `if:`.)
+      - name: Trigger Coolify redeploy
+        if: ${{ github.ref == 'refs/heads/main' && env.COOLIFY_DEPLOY_WEBHOOK != '' }}
+        env:
+          COOLIFY_DEPLOY_WEBHOOK: ${{ secrets.COOLIFY_DEPLOY_WEBHOOK }}
+        run: curl -fsSL -X POST "$COOLIFY_DEPLOY_WEBHOOK"
