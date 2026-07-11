@@ -14,6 +14,21 @@ function asIdArray(v: Json): string[] | undefined {
   return undefined;
 }
 
+/** Parse the JSON per-group overrides stored on a runoff phase. */
+function asGroupLimitArray(v: Json): SectionConfig["groupLimits"] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v
+    .filter((x) => x && typeof x.groupId === "string")
+    .map((x) => ({
+      groupId: x.groupId as string,
+      minSelections: typeof x.minSelections === "number" ? x.minSelections : null,
+      maxSelections: typeof x.maxSelections === "number" ? x.maxSelections : null,
+      exactSelections: typeof x.exactSelections === "number" ? x.exactSelections : null,
+      voteWeight: typeof x.voteWeight === "number" ? x.voteWeight : 1,
+      canVote: typeof x.canVote === "boolean" ? x.canVote : true,
+    }));
+}
+
 const sectionInclude = {
   options: { orderBy: { position: "asc" } },
   groupLimits: true,
@@ -73,9 +88,10 @@ export function toSectionConfig(section: SectionWithConfig): SectionConfig {
 }
 
 /** Build an engine config for a RUNOFF phase (its own method + uniform limits). */
-export function toPhaseConfig(section: SectionWithConfig, phase: { method: string; minSelections: number | null; maxSelections: number | null; exactSelections: number | null; optionIds: Json; seats: number | null }): SectionConfig {
+export function toPhaseConfig(section: SectionWithConfig, phase: { method: string; minSelections: number | null; maxSelections: number | null; exactSelections: number | null; optionIds: Json; seats: number | null; groupLimits?: Json }): SectionConfig {
   const base = toSectionConfig(section);
   const optionIds = asIdArray(phase.optionIds) ?? [];
+  const phaseGroupLimits = asGroupLimitArray(phase.groupLimits);
   return {
     ...base,
     method: phase.method as SectionConfig["method"],
@@ -84,13 +100,17 @@ export function toPhaseConfig(section: SectionWithConfig, phase: { method: strin
     exactSelections: phase.exactSelections,
     numWinners: phase.seats ?? base.numWinners,
     options: base.options.filter((o) => optionIds.includes(o.id)),
-    // Runoff limits are uniform — keep only weight & eligibility from groups.
-    groupLimits: base.groupLimits.map((l) => ({
-      ...l,
-      minSelections: null,
-      maxSelections: null,
-      exactSelections: null,
-    })),
+    // If the runoff was created with its own per-group config, use it verbatim.
+    // Otherwise fall back to legacy behaviour: keep weight & eligibility from the
+    // section but make selection limits uniform.
+    groupLimits:
+      phaseGroupLimits ??
+      base.groupLimits.map((l) => ({
+        ...l,
+        minSelections: null,
+        maxSelections: null,
+        exactSelections: null,
+      })),
     // All tied options are visible to every eligible voter in a runoff.
     optionGroupRules: [],
   };

@@ -353,6 +353,11 @@ model PollPhase {
   exactSelections Int?
   seed       String? // visible seed for auditable random tie-breaks
   resultJson Json? // snapshot of the computed result for this phase
+  // Per-group voting overrides for THIS runoff (independent of the parent
+  // section). JSON array of { groupId, minSelections, maxSelections,
+  // exactSelections, voteWeight, canVote }. Null = inherit weight/eligibility
+  // from the section with uniform selection limits (legacy behaviour).
+  groupLimits Json?
   createdAt  DateTime    @default(now())
   closedAt   DateTime?
 

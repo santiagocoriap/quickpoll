@@ -35,17 +35,20 @@ import {
   GitBranch,
   ScrollText,
   ListChecks,
+  Trash2,
 } from "lucide-react";
 
 export function PollDetail({
   poll,
   results,
   ballots,
+  groups,
   shareUrl,
 }: {
   poll: any;
   results: any[];
   ballots: any[];
+  groups: any[];
   shareUrl: string;
 }) {
   const router = useRouter();
@@ -142,7 +145,7 @@ export function PollDetail({
       {tab === 0 && <ResultsTab poll={poll} results={results} />}
       {tab === 1 && <BallotsTab ballots={ballots} />}
       {tab === 2 && <VotersTab poll={poll} shareUrl={shareUrl} />}
-      {tab === 3 && <TieBreakTab poll={poll} results={results} onDone={() => router.refresh()} />}
+      {tab === 3 && <TieBreakTab poll={poll} results={results} groups={groups} onDone={() => router.refresh()} />}
       {tab === 4 && <AuditTab logs={poll.auditLogs} />}
     </div>
   );
@@ -366,6 +369,20 @@ function RunoffPhaseCard({ phase, computed, method }: { phase: any; computed: an
     }
   }
 
+  async function remove() {
+    if (!confirm(d.deleteRunoffConfirm)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/phases/${phase.id}`, { method: "DELETE" });
+      router.refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="rounded-md border p-3">
       <div className="flex items-center justify-between gap-2">
@@ -373,10 +390,16 @@ function RunoffPhaseCard({ phase, computed, method }: { phase: any; computed: an
         <div className="flex items-center gap-2">
           <LocalizedStatus status={phase.status} />
           {phase.status === "OPEN" && (
-            <Button size="sm" variant="outline" onClick={close} disabled={busy}>
-              <Square />
-              {busy ? d.closing : d.closeRunoff}
-            </Button>
+            <>
+              <Button size="sm" variant="outline" onClick={close} disabled={busy}>
+                <Square />
+                {busy ? d.closing : d.closeRunoff}
+              </Button>
+              <Button size="sm" variant="outline" onClick={remove} disabled={busy}>
+                <Trash2 />
+                {d.deleteRunoff}
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -611,7 +634,7 @@ function SectionBallots({ data }: { data: any }) {
   );
 }
 
-function TieBreakTab({ poll, results, onDone }: { poll: any; results: any[]; onDone: () => void }) {
+function TieBreakTab({ poll, results, groups, onDone }: { poll: any; results: any[]; groups: any[]; onDone: () => void }) {
   const { dict } = useI18n();
   const d = dict.detail;
   const tied = poll.sections
@@ -635,20 +658,24 @@ function TieBreakTab({ poll, results, onDone }: { poll: any; results: any[]; onD
   return (
     <div className="space-y-4">
       {tied.map((t: any) => (
-        <RunoffCreator key={t.section.id} section={t.section} tiedIds={t.tiedIds} rec={t.rec} seats={t.seats} onDone={onDone} />
+        <RunoffCreator key={t.section.id} section={t.section} groups={groups} tiedIds={t.tiedIds} rec={t.rec} seats={t.seats} onDone={onDone} />
       ))}
     </div>
   );
 }
 
+type RunoffGroupLimit = { maxSelections: number | null; voteWeight: number; canVote: boolean };
+
 function RunoffCreator({
   section,
+  groups,
   tiedIds,
   rec,
   seats,
   onDone,
 }: {
   section: any;
+  groups: any[];
   tiedIds: string[];
   rec: any;
   seats: number;
@@ -656,22 +683,55 @@ function RunoffCreator({
 }) {
   const { dict } = useI18n();
   const d = dict.detail;
+  const w = dict.wizard;
   const [selected, setSelected] = useState<string[]>(tiedIds);
   const [method, setMethod] = useState<string>(seats <= 1 ? "SINGLE" : "MULTIPLE");
   const [maxSel, setMaxSel] = useState<number>(seats);
+  // Per-group runoff config, seeded from the section's per-group limits.
+  const [groupLimits, setGroupLimits] = useState<Record<string, RunoffGroupLimit>>(() => {
+    const seed: Record<string, RunoffGroupLimit> = {};
+    for (const l of section.groupLimits ?? []) {
+      seed[l.groupId] = {
+        maxSelections: l.maxSelections ?? null,
+        voteWeight: l.voteWeight ?? 1,
+        canVote: l.canVote ?? true,
+      };
+    }
+    return seed;
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const labelOf = (id: string) => section.options.find((o: any) => o.id === id)?.label ?? id;
   const tieLabel = (dict.wizard.tie as Record<string, string>)[section.tieBreakStrategy] ?? section.tieBreakStrategy;
   const usesMax = method === "MULTIPLE" || method === "APPROVAL";
 
+  const glOf = (groupId: string): RunoffGroupLimit =>
+    groupLimits[groupId] ?? { maxSelections: null, voteWeight: 1, canVote: true };
+  function setGL(groupId: string, patch: Partial<RunoffGroupLimit>) {
+    setGroupLimits((prev) => ({ ...prev, [groupId]: { ...glOf(groupId), ...patch } }));
+  }
+
   async function createRunoff() {
     setBusy(true);
     setError(null);
     try {
+      const groupLimitRows = groups.map((g) => {
+        const gl = glOf(g.id);
+        return {
+          groupId: g.id,
+          voteWeight: gl.voteWeight,
+          canVote: gl.canVote,
+          ...(usesMax ? { maxSelections: gl.maxSelections } : {}),
+        };
+      });
       await api(`/api/sections/${section.id}/runoff`, {
         method: "POST",
-        body: { optionIds: selected, method, ...(usesMax ? { maxSelections: maxSel } : {}) },
+        body: {
+          optionIds: selected,
+          method,
+          ...(usesMax ? { maxSelections: maxSel } : {}),
+          ...(groups.length ? { groupLimits: groupLimitRows } : {}),
+        },
       });
       onDone();
     } catch (err) {
@@ -729,6 +789,65 @@ function RunoffCreator({
           )}
         </div>
         <p className="text-xs text-muted-foreground">{d.runoffConfigHint}</p>
+
+        {groups.length > 0 && (
+          <div className="space-y-2">
+            <Label>{w.perGroupLimits}</Label>
+            <div className="overflow-x-auto rounded-md border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2">{w.group}</th>
+                    {usesMax && <th className="px-3 py-2">{w.maxSelections}</th>}
+                    <th className="px-3 py-2">{w.voteWeight}</th>
+                    <th className="px-3 py-2">{w.canVote}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groups.map((g) => {
+                    const gl = glOf(g.id);
+                    return (
+                      <tr key={g.id} className="border-t">
+                        <td className="px-3 py-2 font-medium">{g.name}</td>
+                        {usesMax && (
+                          <td className="px-3 py-2">
+                            <Input
+                              type="number"
+                              className="h-8 w-20"
+                              min={1}
+                              value={gl.maxSelections ?? ""}
+                              onChange={(e) =>
+                                setGL(g.id, { maxSelections: e.target.value === "" ? null : Number(e.target.value) })
+                              }
+                            />
+                          </td>
+                        )}
+                        <td className="px-3 py-2">
+                          <Input
+                            type="number"
+                            className="h-8 w-20"
+                            min={1}
+                            value={gl.voteWeight}
+                            onChange={(e) => setGL(g.id, { voteWeight: Number(e.target.value) || 1 })}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={gl.canVote}
+                            onChange={(e) => setGL(g.id, { canVote: e.target.checked })}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-xs text-muted-foreground">{w.perGroupHint}</p>
+          </div>
+        )}
+
         {error && <p className="text-sm text-destructive">{error}</p>}
         <Button onClick={createRunoff} disabled={busy || selected.length < 2}>
           <GitBranch />

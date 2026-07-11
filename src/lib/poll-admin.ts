@@ -171,6 +171,14 @@ export async function createRunoffPhase(params: {
   minSelections?: number | null;
   maxSelections?: number | null;
   exactSelections?: number | null;
+  groupLimits?: {
+    groupId: string;
+    minSelections?: number | null;
+    maxSelections?: number | null;
+    exactSelections?: number | null;
+    voteWeight?: number;
+    canVote?: boolean;
+  }[];
 }) {
   const section = await prisma.pollSection.findUnique({
     where: { id: params.sectionId },
@@ -212,6 +220,7 @@ export async function createRunoffPhase(params: {
       minSelections: params.minSelections ?? null,
       maxSelections,
       exactSelections,
+      groupLimits: params.groupLimits && params.groupLimits.length ? (params.groupLimits as object[]) : undefined,
       seed: params.seed ?? `${section.id}:runoff:${phaseIndex}`,
       status: "OPEN",
     },

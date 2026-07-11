@@ -13,6 +13,18 @@ const schema = z.object({
   minSelections: z.number().int().min(0).nullable().optional(),
   maxSelections: z.number().int().min(1).nullable().optional(),
   exactSelections: z.number().int().min(1).nullable().optional(),
+  groupLimits: z
+    .array(
+      z.object({
+        groupId: z.string(),
+        minSelections: z.number().int().min(0).nullable().optional(),
+        maxSelections: z.number().int().min(1).nullable().optional(),
+        exactSelections: z.number().int().min(1).nullable().optional(),
+        voteWeight: z.number().int().min(1).optional(),
+        canVote: z.boolean().optional(),
+      })
+    )
+    .optional(),
 });
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
@@ -35,6 +47,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
       minSelections: data.minSelections,
       maxSelections: data.maxSelections,
       exactSelections: data.exactSelections,
+      groupLimits: data.groupLimits,
       actorId: user.id,
     });
     return jsonOk({ phaseId: phase.id });

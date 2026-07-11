@@ -12,7 +12,11 @@ export default async function PollDetailPage({ params }: { params: { id: string 
     include: {
       sections: {
         orderBy: { position: "asc" },
-        include: { options: { orderBy: { position: "asc" } }, phases: { orderBy: { phaseIndex: "asc" } } },
+        include: {
+          options: { orderBy: { position: "asc" } },
+          phases: { orderBy: { phaseIndex: "asc" } },
+          groupLimits: true,
+        },
       },
       access: { include: { group: true, user: true } },
       auditLogs: { orderBy: { createdAt: "desc" }, take: 100, include: { actor: { select: { name: true } } } },
@@ -54,11 +58,15 @@ export default async function PollDetailPage({ params }: { params: { id: string 
     })
   );
 
+  // All groups, to seed the per-group editor when creating a runoff.
+  const groups = await prisma.group.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true } });
+
   return (
     <PollDetail
       poll={JSON.parse(JSON.stringify(poll))}
       results={JSON.parse(JSON.stringify(sectionResults))}
       ballots={JSON.parse(JSON.stringify(sectionBallots))}
+      groups={JSON.parse(JSON.stringify(groups))}
       shareUrl={appUrl(`/p/${poll.slug}`)}
     />
   );
