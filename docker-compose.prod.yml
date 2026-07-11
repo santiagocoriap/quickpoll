@@ -24,7 +24,8 @@ services:
 
   web:
     # No `build:` here on purpose — the image is pulled, not built.
-    image: ${WEB_IMAGE:-ghcr.io/your-user/quickpoll:latest}
+    # Defaults to this repo's image; override with WEB_IMAGE if you forked/renamed.
+    image: ${WEB_IMAGE:-ghcr.io/santiagocoriap/quickpoll:latest}
     restart: unless-stopped
     depends_on:
       db:
