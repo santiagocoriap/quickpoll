@@ -1,7 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getCurrentUser, canManagePoll } from "@/lib/auth";
-import { computeSection } from "@/lib/poll-service";
+import { computeSection, loadSectionBallots } from "@/lib/poll-service";
 import { appUrl } from "@/lib/utils";
 import { PollDetail } from "./poll-detail";
 
@@ -36,10 +36,29 @@ export default async function PollDetailPage({ params }: { params: { id: string 
     })
   );
 
+  // Individual ballots per section, for the admin "who voted for what" view.
+  // ANONYMOUS sections keep the voter list (participation) but drop the choices.
+  const sectionBallots = await Promise.all(
+    poll.sections.map(async (s) => {
+      const choicesHidden = s.anonymity === "ANONYMOUS";
+      const ballots = await loadSectionBallots(s.id);
+      return {
+        sectionId: s.id,
+        title: s.title,
+        anonymity: s.anonymity,
+        method: s.method,
+        choicesHidden,
+        count: ballots.length,
+        ballots: choicesHidden ? ballots.map((b) => ({ ...b, selections: [] })) : ballots,
+      };
+    })
+  );
+
   return (
     <PollDetail
       poll={JSON.parse(JSON.stringify(poll))}
       results={JSON.parse(JSON.stringify(sectionResults))}
+      ballots={JSON.parse(JSON.stringify(sectionBallots))}
       shareUrl={appUrl(`/p/${poll.slug}`)}
     />
   );

@@ -34,9 +34,20 @@ import {
   Users,
   GitBranch,
   ScrollText,
+  ListChecks,
 } from "lucide-react";
 
-export function PollDetail({ poll, results, shareUrl }: { poll: any; results: any[]; shareUrl: string }) {
+export function PollDetail({
+  poll,
+  results,
+  ballots,
+  shareUrl,
+}: {
+  poll: any;
+  results: any[];
+  ballots: any[];
+  shareUrl: string;
+}) {
   const router = useRouter();
   const { dict } = useI18n();
   const d = dict.detail;
@@ -70,7 +81,7 @@ export function PollDetail({ poll, results, shareUrl }: { poll: any; results: an
     FINALIZED: [{ label: d.archive, status: "ARCHIVED", variant: "outline", icon: Archive }],
     ARCHIVED: [],
   };
-  const tabIcons = [BarChart3, Users, GitBranch, ScrollText];
+  const tabIcons = [BarChart3, ListChecks, Users, GitBranch, ScrollText];
 
   return (
     <div className="space-y-6">
@@ -129,9 +140,10 @@ export function PollDetail({ poll, results, shareUrl }: { poll: any; results: an
       </div>
 
       {tab === 0 && <ResultsTab poll={poll} results={results} />}
-      {tab === 1 && <VotersTab poll={poll} shareUrl={shareUrl} />}
-      {tab === 2 && <TieBreakTab poll={poll} results={results} onDone={() => router.refresh()} />}
-      {tab === 3 && <AuditTab logs={poll.auditLogs} />}
+      {tab === 1 && <BallotsTab ballots={ballots} />}
+      {tab === 2 && <VotersTab poll={poll} shareUrl={shareUrl} />}
+      {tab === 3 && <TieBreakTab poll={poll} results={results} onDone={() => router.refresh()} />}
+      {tab === 4 && <AuditTab logs={poll.auditLogs} />}
     </div>
   );
 }
@@ -511,6 +523,91 @@ function VotersTab({ poll, shareUrl }: { poll: any; shareUrl: string }) {
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function formatChoices(selections: any[], method: string): string {
+  if (!selections.length) return "";
+  if (method === "RANKED") return selections.map((s) => `${s.rank ?? "?"}. ${s.label}`).join("   ");
+  if (method === "SCORE") return selections.map((s) => `${s.label}: ${s.score ?? 0}`).join(", ");
+  if (method === "APPROVAL")
+    return selections
+      .filter((s) => s.approved)
+      .map((s) => s.label)
+      .join(", ");
+  return selections.map((s) => s.label).join(", ");
+}
+
+function BallotsTab({ ballots }: { ballots: any[] }) {
+  return (
+    <div className="space-y-6">
+      {ballots.map((s) => (
+        <SectionBallots key={s.sectionId} data={s} />
+      ))}
+    </div>
+  );
+}
+
+function SectionBallots({ data }: { data: any }) {
+  const { dict } = useI18n();
+  const d = dict.detail;
+  const anonTone = data.anonymity === "ANONYMOUS" ? "amber" : data.anonymity === "PUBLIC" ? "green" : "blue";
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle>{data.title}</CardTitle>
+          <Badge tone={anonTone as any}>{d.anon[data.anonymity as keyof typeof d.anon] ?? data.anonymity}</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground">{d.ballotsCount(data.count)}</p>
+      </CardHeader>
+      <CardContent className="p-0">
+        {data.count === 0 ? (
+          <p className="px-6 pb-6 text-sm text-muted-foreground">{d.noBallots}</p>
+        ) : (
+          <>
+            {data.choicesHidden && (
+              <p className="px-6 pb-3 text-sm text-amber-700 dark:text-amber-300">{d.secretBallotNote}</p>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="border-b bg-muted/40 text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2">{d.ballotVoter}</th>
+                    {!data.choicesHidden && <th className="px-4 py-2">{d.ballotChoice}</th>}
+                    <th className="px-4 py-2">{d.ballotWeight}</th>
+                    <th className="px-4 py-2">{d.ballotWhen}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.ballots.map((b: any) => (
+                    <tr key={b.id} className="border-b align-top last:border-0">
+                      <td className="px-4 py-2">
+                        <div className="flex items-center gap-2 font-medium">
+                          {b.voterName ?? b.codeLabel ?? d.anonCode}
+                          {b.viaCode && (
+                            <Badge tone="gray">
+                              <Ticket />
+                              {d.viaCode}
+                            </Badge>
+                          )}
+                        </div>
+                        {b.voterEmail && <div className="text-xs text-muted-foreground">{b.voterEmail}</div>}
+                      </td>
+                      {!data.choicesHidden && (
+                        <td className="px-4 py-2">{formatChoices(b.selections, data.method) || "—"}</td>
+                      )}
+                      <td className="px-4 py-2 text-muted-foreground">{b.weight}</td>
+                      <td className="whitespace-nowrap px-4 py-2 text-muted-foreground">{formatDate(b.updatedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

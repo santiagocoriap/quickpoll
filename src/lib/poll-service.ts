@@ -224,6 +224,55 @@ export async function loadResultBallots(
   }));
 }
 
+export interface BallotSelectionView {
+  label: string;
+  rank: number | null;
+  score: number | null;
+  approved: boolean;
+}
+
+export interface BallotView {
+  id: string;
+  voterName: string | null;
+  voterEmail: string | null;
+  codeLabel: string | null;
+  viaCode: boolean;
+  weight: number;
+  createdAt: Date;
+  updatedAt: Date;
+  selections: BallotSelectionView[];
+}
+
+/**
+ * Load individual ballots (voter identity + choices) for a section's original
+ * round, ordered by when they were cast. Used by the admin ballot view; callers
+ * are responsible for honouring the section's `anonymity` setting.
+ */
+export async function loadSectionBallots(sectionId: string): Promise<BallotView[]> {
+  const votes = await prisma.vote.findMany({
+    where: { sectionId, phaseId: null },
+    include: {
+      selections: { include: { option: { select: { label: true, position: true } } } },
+      user: { select: { name: true, email: true } },
+      voterCode: { select: { label: true } },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  return votes.map((v) => ({
+    id: v.id,
+    voterName: v.user?.name ?? null,
+    voterEmail: v.user?.email ?? null,
+    codeLabel: v.voterCode?.label ?? null,
+    viaCode: !v.userId && Boolean(v.voterCodeId),
+    weight: v.weight,
+    createdAt: v.createdAt,
+    updatedAt: v.updatedAt,
+    selections: [...v.selections]
+      .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0) || a.option.position - b.option.position)
+      .map((s) => ({ label: s.option.label, rank: s.rank, score: s.score, approved: s.approved })),
+  }));
+}
+
 export interface ComputedSection {
   result: SectionResult;
   eligibleVoters: number;
